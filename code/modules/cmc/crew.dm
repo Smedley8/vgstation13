@@ -39,7 +39,6 @@ Crew Monitor by Paul, based on the holomaps by Deity
 	var/list/ui_tooltips = list() //list of lists of the buttons
 	var/list/freeze = list() //list of _using set freeze
 	var/list/entries = list() //list of all crew, which has sensors >= 1
-	var/list/textview_popup = list()//holds all the textview popups people are looking at rn
 	var/list/textview_updatequeued = list() //list of _using set textviewupdate setting
 	var/list/holomap = list() //list of _using set holomap-enable setting
 	var/list/holomap_z_levels_mapped = list(STATION_Z, ASTEROID_Z, DERELICT_Z) //all z-level which should be mapped
@@ -116,11 +115,12 @@ Crew Monitor by Paul, based on the holomaps by Deity
 		deactivate(user)
 		return
 
+	var/uid = "\ref[user]"
 	if(action == "text")
-		openTextview(user)
+		updateTextView(user)
+		textview_updatequeued[uid] = 1
 		return
 
-	var/uid = "\ref[user]"
 	if(action == "holo")
 		holomap[uid] = !holomap[uid]
 	else if(text2num(action) != null)
@@ -295,7 +295,9 @@ Crew Monitor by Paul, based on the holomaps by Deity
 	var/uid = "\ref[user]"
 	if(user && user.client) //incase something is fucky
 		closeHolomap(user)
-		closeTextview(user)
+		var/datum/nanoui/ui = nanomanager.get_open_ui(user, src, "textview")
+		if(ui)
+			ui.close()
 		user.client.screen -= ui_tooltips[uid] //remove ui
 	_using -= user
 	holomap_images[uid].len = 0 //incase something is fucky
@@ -305,7 +307,6 @@ Crew Monitor by Paul, based on the holomaps by Deity
 	holomap_z[uid] = null
 	textview_updatequeued[uid] = null
 	holomap[uid] = null
-	textview_popup[uid] = null //incase something is fucky
 
 /obj/machinery/computer/crew/proc/initializeHolomap(var/mob/user)
 	var/list/all_ui_z_levels = holomap_z_levels_mapped | holomap_z_levels_unmapped
@@ -357,7 +358,6 @@ Crew Monitor by Paul, based on the holomaps by Deity
 		holomap_z[uid] = STATION_Z
 		textview_updatequeued[uid] = 1
 		holomap[uid] = 1
-		textview_popup[uid] = null
 		scanCrew() //else the first user has to wait for process to fire
 		processUser(user)
 		to_chat(user, "<span class='notice'>You enable the holomap.</span>")
@@ -375,13 +375,13 @@ Crew Monitor by Paul, based on the holomaps by Deity
 
 /obj/machinery/computer/crew/proc/processUser(var/mob/user)
 	var/uid = "\ref[user]"
-	if(!textview_popup[uid] && (holomap[uid] == 0))
+	if(!nanomanager.get_open_ui(user, src, "textview") && (holomap[uid] == 0))
 		deactivate(user)
 		return
 
 	updateVisuals(user)
 
-	if(textview_updatequeued[uid] && textview_popup[uid])
+	if(textview_updatequeued[uid])
 		updateTextView(user)
 
 //ahhh
@@ -501,7 +501,7 @@ Crew Monitor by Paul, based on the holomaps by Deity
 
 /obj/abstract/screen/interface/tooltip/CrewIcon/MouseEntered(location,control,params)
 	if(CMC)
-		var/uid = "\ref[user]"	
+		var/uid = "\ref[user]"
 		CMC.freeze[uid] = 1
 	..()
 
@@ -521,44 +521,41 @@ Crew Monitor by Paul, based on the holomaps by Deity
 		return
 	if(href_list["toggle"])
 		textview_updatequeued[uid] = !textview_updatequeued[uid]
+		var/datum/nanoui/ui = nanomanager.get_open_ui(usr, src, "textview")
+		if(ui)
+			ui.send_message("toggleUpdatebtn")
 		updateTextView(usr)
 		return
 	if(href_list["holo"])
 		holomap[uid] = !holomap[uid]
+		var/datum/nanoui/ui = nanomanager.get_open_ui(usr, src, "textview")
+		if(ui)
+			ui.send_message("toggleHolobtn")
 		processUser(usr) //to remove/add the holomap and update the textview
 		return
-
-//initializes textview, only called once
-/obj/machinery/computer/crew/proc/openTextview(var/mob/user)
-	var/uid = "\ref[user]"
-	textview_updatequeued[uid] = 1
-	if(user.client)
-		var/datum/asset/simple/C = new/datum/asset/simple/cmc_css_icons()
-		send_asset_list(user.client, C.assets)
-	textview_popup[uid] = new /datum/browser(user, "cmc_textview", "Crew Monitoring", 900, 600, src)
-	textview_popup[uid].add_stylesheet("cmc", 'html/browser/cmc.css')
-	textview_popup[uid].open()
-	onclose(user, "cmc_textview", src)
-	updateTextView(user)
 
 //updates the textview, called every process() when enabled
 /obj/machinery/computer/crew/proc/updateTextView(var/mob/user)
 	var/uid = "\ref[user]"
-	//styles
-	var/list/t = "<html><head><title>Crew Monitor</title></head><body><kbd><a style='margin-right: 10px;' href='?src=\ref[src];toggle=1'>" + (textview_updatequeued[uid] ? "Disable Updating" : "Enable Updating") + "</a><a href='?src=\ref[src];holo=1'>" + (holomap[uid] ? "Disable Holomap" : "Enable Holomap") + "</a><hr><br><table align='center'><tr><th><u>Name</u></th><th><u>Vitals</u></th><th><u>Position</u></th></tr>"
 
 	//adding table rows
+	var/list/all_data = list()
 	for(var/entry in entries[holomap_z[uid]])
-		var/see_x = entry[ENTRY_SEE_X]
-		var/see_y = entry[ENTRY_SEE_Y]
-		var/mob/living/carbon/H = entry[ENTRY_MOB]
-		var/name = entry[ENTRY_NAME]
-		var/job = entry[ENTRY_ASSIGNMENT]
-		var/stat = entry[ENTRY_STAT]
-		var/list/damage = entry[ENTRY_DAMAGE]
-		var/player_area = entry[ENTRY_AREA]
-		var/ijob = entry[ENTRY_IJOB]
+		var/list/data = list()
+		data["see"] = list()
+		data["see"]["x"] = entry[ENTRY_SEE_X]
+		data["see"]["y"] = entry[ENTRY_SEE_Y]
+		data["name"] = entry[ENTRY_NAME]
+		data["job"] = entry[ENTRY_ASSIGNMENT]
+		if(entry[ENTRY_DAMAGE])
+			data["damage"] = list()
+			data["damage"]["oxygen"] = entry[ENTRY_DAMAGE][DAMAGE_OXYGEN]
+			data["damage"]["toxin"] = entry[ENTRY_DAMAGE][DAMAGE_TOXIN]
+			data["damage"]["fire"] = entry[ENTRY_DAMAGE][DAMAGE_FIRE]
+			data["damage"]["brute"] = entry[ENTRY_DAMAGE][DAMAGE_BRUTE]
+		data["area"] = entry[ENTRY_AREA]
 
+		var/ijob = entry[ENTRY_IJOB]
 		var/role
 		switch(ijob)
 			if(0)	role = "cap" // captain
@@ -570,38 +567,44 @@ Crew Monitor by Paul, based on the holomaps by Deity
 			if(60 to 69) role = "silicon" //silicon
 			if(200 to 229) role = "cent"
 			else role = "unk"
+		data["role"] = role
 
+		var/mob/living/carbon/H = entry[ENTRY_MOB]
+		var/stat = entry[ENTRY_STAT]
 		var/icon
 		if(istype(H, /mob/living/carbon/human))
 			if(stat != 2)
-				if(damage)
-					icon = getLifeIcon(damage)
+				if(entry[ENTRY_DAMAGE])
+					icon = getLifeIcon(entry[ENTRY_DAMAGE])
 				else
 					icon = "0"
 			else
 				icon = "6"
 		else
 			icon = "7"
+		data["icon"] = icon
 
-		var/list/string = list("<span class='name [role]'>[name]</span> ([job])")
-		string += "<img src='cmc_[icon].png' height='11' width='11'/>" + (damage ? "(<span class='oxygen'>[damage[DAMAGE_OXYGEN]]</span>/<span class='toxin'>[damage[DAMAGE_TOXIN]]</span>/<span class='fire'>[damage[DAMAGE_FIRE]]</span>/<span class='brute'>[damage[DAMAGE_BRUTE]]</span>)" : "Not Available")
-		string += (see_x && see_y) ? "[player_area] ([see_x],[see_y])" : "Not Available"
-		var/actualstring = "<td>" + string.Join("</td><td>") + "</td>"
+		all_data["[all_data.len+1]"] = data
 
-		t += "<tr>[actualstring]</tr>"
+	var/datum/nanoui/ui = nanomanager.get_open_ui(user, src, "textview")
+	if (!ui)
+		if(user.client)
+			var/datum/asset/simple/C = new/datum/asset/simple/cmc_css_icons()
+			send_asset_list(user.client, C.assets)
+		
+		ui = new(user, src, "textview", "cmc.tmpl", "Crew Monitoring", 900, 600)
+		ui.add_stylesheet("cmc.css")
+		var/list/i_data = list()
+		i_data["update"] = textview_updatequeued[uid]
+		i_data["holo"] = holomap[uid]
+		ui.set_initial_data(i_data)
+		ui.open()
 
-	t += "</table></kbd></body></html>"
-
-	textview_popup[uid].set_content(jointext(t, ""))
-	textview_popup[uid].open()
+	ui.send_message("populateTable", list2params(list(json_encode(all_data))))
 
 //taking care of some closing stuff, triggered by onclose() sending close=1 to Topic(), since we gave it our ref as 3rd param
 /obj/machinery/computer/crew/proc/closeTextview(var/mob/user)
-	var/uid = "\ref[user]"
-	textview_updatequeued[uid] = 0
-	if(textview_popup[uid])
-		textview_popup[uid].close()
-		textview_popup[uid] = null
+	textview_updatequeued["\ref[user]"] = 0
 
 #undef ENTRY_SEE_X
 #undef ENTRY_SEE_Y
